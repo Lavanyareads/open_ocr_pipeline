@@ -1,0 +1,1 @@
+"""Physical measurement helpers for OCR-derived geometry."""

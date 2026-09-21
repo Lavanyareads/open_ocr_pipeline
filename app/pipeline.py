@@ -24,6 +24,7 @@ from .extraction.spatial_association import SpatialAssociator, CrossImageAssocia
 from .extraction.declarations import DeclarationResolver
 from .models.schemas import OCRBlock
 from .vlm.semantic_resolver import VLMSemanticResolver
+from .measurement.barcode_calibration import BarcodeCalibrator
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +45,25 @@ class Pipeline:
         ".jpg", ".jpeg", ".png", ".bmp",
         ".tiff", ".tif", ".gif", ".webp", ".pdf",
     }
+    FONT_MEASUREMENT_FIELDS = {
+        "mrp",
+        "net_quantity",
+        "manufacturer_packer_importer",
+        "country_of_origin",
+        "manufacture_pack_import_date",
+        "best_before_use_by",
+        "consumer_care",
+        "unit_sale_price",
+        "dimensions",
+    }
 
     def __init__(
         self,
         input_dir: str = "input_images",
         output_dir: str = "output",
         api_key: Optional[str] = None,
+        barcode_width_mm: Optional[float] = None,
+        barcode_height_mm: Optional[float] = None,
     ):
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -65,6 +79,10 @@ class Pipeline:
         self.cross_image_associator = CrossImageAssociator()
         self.declaration_resolver = DeclarationResolver()
         self.vlm_resolver = VLMSemanticResolver()
+        self.barcode_calibrator = BarcodeCalibrator(
+            barcode_width_mm=barcode_width_mm,
+            barcode_height_mm=barcode_height_mm,
+        )
 
     def run(self, product_id: Optional[str] = None) -> Dict[str, Any]:
         """Run the full pipeline.
@@ -203,6 +221,13 @@ class Pipeline:
         )
         raw_ocr_output["vlm_results"] = vlm_results
 
+        # Keep the complete measurement evidence in raw OCR output, but only
+        # expose declaration-related block measurements in structured JSON.
+        full_font_measurement = self.barcode_calibrator.measure(
+            images, ocr_block_models
+        )
+        raw_ocr_output["font_measurement"] = full_font_measurement
+
         raw_ocr_path = os.path.join(
             self.raw_ocr_dir, f"{product_id}_raw_ocr.json"
         )
@@ -214,6 +239,11 @@ class Pipeline:
         print(f"\n--- Declaration Resolution ---")
         extraction = self.declaration_resolver.resolve(
             product_id, candidates, vlm_results=vlm_results
+        )
+
+        # Physical measurement is independent of declaration resolution.
+        extraction.font_measurement = self._filter_font_measurement(
+            full_font_measurement, candidates
         )
 
         # Step 10: Save structured JSON
@@ -249,6 +279,40 @@ class Pipeline:
             "structured_path": structured_path,
             "extraction": structured,
         }
+
+    def _filter_font_measurement(
+        self,
+        measurement: Dict[str, Any],
+        candidates: Dict[str, List[Any]],
+    ) -> Dict[str, Any]:
+        """Retain only bbox measurements tied to legal declaration candidates."""
+        relevant_keys = {
+            (
+                block.image_index,
+                block.text,
+                tuple(block.bbox),
+            )
+            for field, field_candidates in candidates.items()
+            if field in self.FONT_MEASUREMENT_FIELDS
+            for candidate in field_candidates
+            for block in candidate.source_blocks
+        }
+
+        filtered = {
+            key: value
+            for key, value in measurement.items()
+            if key != "text_bboxes"
+        }
+        filtered["text_bboxes"] = [
+            bbox
+            for bbox in measurement.get("text_bboxes", [])
+            if (
+                bbox.get("image_index"),
+                bbox.get("text"),
+                tuple(bbox.get("bbox", [])),
+            ) in relevant_keys
+        ]
+        return filtered
 
     def _discover_images(self, directory: Optional[str] = None) -> List[str]:
         """Discover supported image files directly in one product directory."""

@@ -45,6 +45,18 @@ def main():
         help="Product identifier (auto-generated if not provided)",
     )
     parser.add_argument(
+        "--barcode-width-mm",
+        type=float,
+        default=None,
+        help="Optional physical barcode width in millimetres for scale calibration",
+    )
+    parser.add_argument(
+        "--barcode-height-mm",
+        type=float,
+        default=None,
+        help="Optional physical barcode height in millimetres for scale calibration",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -64,6 +76,8 @@ def main():
         pipeline = Pipeline(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
+            barcode_width_mm=args.barcode_width_mm,
+            barcode_height_mm=args.barcode_height_mm,
         )
     except ValueError as e:
         print(f"\nConfiguration error: {e}")

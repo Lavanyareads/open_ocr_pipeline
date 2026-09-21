@@ -60,6 +60,7 @@ class ProductExtraction(BaseModel):
     """Complete extraction result for a product."""
     product_id: str
     declarations: Dict[str, DeclarationValue] = Field(default_factory=dict)
+    font_measurement: Dict[str, Any] = Field(default_factory=dict)
 
     def to_structured_json(self) -> Dict[str, Any]:
         """Convert to concise structured JSON for Person 5's Rule Engine.
@@ -74,6 +75,7 @@ class ProductExtraction(BaseModel):
         result: Dict[str, Any] = {
             "product_id": self.product_id,
             "declarations": {},
+            "font_measurement": self.font_measurement,
         }
 
         for field_name, decl in self.declarations.items():
