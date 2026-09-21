@@ -45,14 +45,14 @@ MANUFACTURER_PATTERNS = [
     r'\bPacked\s*&?\s*(?:Distributed|Marketed)\s+by\b',
     r'\bImported\s+(?:by|&|and)\b',
     r'\bMarketed\s+by\b',
+    r'\bMkt\.?\s+By\b',
     r'\bDistributed\s+by\b',
 ]
 
 COUNTRY_OF_ORIGIN_PATTERNS = [
-    r'\bCountry\s+of\s+Origin\b',
-    r'\bMade\s+in\b',
-    r'\bProduct\s+of\b',
-    r'\bOrigin\b',
+    r'\bCountry\s+of\s+Origin\b\s*[:.]?\s*([A-Za-z][A-Za-z .-]*)',
+    r'\bMade\s+in\b\s+([A-Za-z][A-Za-z .-]*)',
+    r'\bManufactured\s+in\b\s+([A-Za-z][A-Za-z .-]*?)(?=\s+by\b|\s*$|:)',
 ]
 
 DATE_PATTERNS = [
@@ -297,7 +297,7 @@ class CandidateExtractor:
         for block in blocks:
             text = block.text.strip()
             # Ignore nutrition / ingredient lines
-            if re.search(r'(?i)(?:per\s+100|%\s*rda|approx|protein|fat|carb|sugar|sodium|kcal|contains\s*:)', text):
+            if re.search(r'(?i)(?:serving\s+size|no\.\s+of\s+servings|per\s+100|%\s*rda|approx|protein|fat|carb|sugar|sodium|kcal|contains\s*:)', text):
                 continue
 
             anchor = self._match_patterns(text, NET_QUANTITY_PATTERNS)
@@ -315,6 +315,7 @@ class CandidateExtractor:
                             "numeric_value": float(qty.group(1).replace(",", "")),
                             "unit": qty.group(2),
                             "type": "anchor_with_value",
+                            "priority": 100,
                         },
                     ))
                 else:
@@ -341,6 +342,7 @@ class CandidateExtractor:
                             "numeric_value": float(qty.group(1).replace(",", "")),
                             "unit": qty.group(2),
                             "type": "value_only",
+                            "priority": 10,
                         },
                     ))
         return candidates
@@ -351,6 +353,8 @@ class CandidateExtractor:
         candidates: List[DeclarationCandidate] = []
         for block in blocks:
             text = block.text.strip()
+            if re.search(r"\bpackaging\s+material\b", text, re.IGNORECASE):
+                continue
             anchor = self._match_patterns(text, MANUFACTURER_PATTERNS)
             if anchor:
                 after = text[anchor.end():].strip().lstrip(":").strip()
@@ -378,32 +382,60 @@ class CandidateExtractor:
         candidates: List[DeclarationCandidate] = []
         for block in blocks:
             text = block.text.strip()
-            anchor = self._match_patterns(text, COUNTRY_OF_ORIGIN_PATTERNS)
-            if anchor:
-                after = text[anchor.end():].strip().lstrip(":").strip()
-                is_made_in = bool(
-                    re.search(r'\bMade\s+in\b', text, re.IGNORECASE)
-                )
+            match = None
+            evidence_type = None
+            for pattern, candidate_type in zip(
+                COUNTRY_OF_ORIGIN_PATTERNS,
+                (
+                    "country_of_origin_statement",
+                    "made_in_statement",
+                    "manufactured_in_statement",
+                ),
+            ):
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    evidence_type = candidate_type
+                    break
+            if match and match.group(1):
+                country = match.group(1).strip(" .:-")
+                source_blocks = [block]
+                raw_text = text
+                if evidence_type == "manufactured_in_statement":
+                    continuation = self._find_country_continuation(blocks, block)
+                    if continuation is not None:
+                        source_blocks.append(continuation)
+                        raw_text = f"{text} {continuation.text.strip()}"
                 candidates.append(DeclarationCandidate(
                     field_name="country_of_origin",
-                    value=after if after else None,
-                    raw_text=text,
-                    confidence_score=0.8 if (after and is_made_in) else (
-                        0.6 if after else 0.4
-                    ),
-                    source_blocks=[block],
-                    status=(
-                        DeclarationStatus.RESOLVED
-                        if after
-                        else DeclarationStatus.UNRESOLVED
-                    ),
+                    value=country,
+                    raw_text=raw_text,
+                    confidence_score=0.8,
+                    source_blocks=source_blocks,
+                    status=DeclarationStatus.RESOLVED,
                     metadata={
-                        "type": "made_in_pattern" if is_made_in else (
-                            "anchor_with_value" if after else "anchor_only"
-                        ),
+                        "type": evidence_type,
+                        "evidence_type": evidence_type,
                     },
                 ))
         return candidates
+
+    @staticmethod
+    def _find_country_continuation(
+        blocks: List[OCRBlock], anchor_block: OCRBlock
+    ) -> Optional[OCRBlock]:
+        """Find a nearby manufacturer value for complete country evidence text."""
+        ax, ay, aw, ah = anchor_block.bbox
+        for block in blocks:
+            if block is anchor_block or block.image_index != anchor_block.image_index:
+                continue
+            bx, by, bw, bh = block.bbox
+            vertical_gap = by - (ay + ah)
+            horizontal_gap = bx - (ax + aw)
+            if -40 <= vertical_gap <= 90 and -250 <= horizontal_gap <= 350:
+                return block
+            if by > ay + ah + 90:
+                break
+        return None
 
     def _extract_date_candidates(
         self, blocks: List[OCRBlock]

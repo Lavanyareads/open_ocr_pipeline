@@ -59,6 +59,18 @@ class TestCandidateExtractor:
         assert cand.metadata.get("unit") == "g"
         assert cand.metadata.get("numeric_value") == 500.0
 
+    def test_net_weight_priority_over_serving_size(self, extractor):
+        blocks = [
+            OCRBlock(text="Serving size: 36 g", bbox=[1, 1, 100, 20], image_index=0),
+            OCRBlock(text="Net Wt.: 100 g", bbox=[1, 30, 100, 20], image_index=0),
+        ]
+
+        candidates = extractor.extract_all_candidates(blocks)
+
+        assert [candidate.value for candidate in candidates["net_quantity"]] == [
+            "100 g"
+        ]
+
     def test_manufacturer_anchor_with_value(self, extractor):
         blocks = [
             OCRBlock(
@@ -73,6 +85,25 @@ class TestCandidateExtractor:
         assert "ABC Foods" in cand.value
         assert cand.status == DeclarationStatus.RESOLVED
 
+    def test_mkt_by_is_marketer_and_packaging_material_is_excluded(self, extractor):
+        blocks = [
+            OCRBlock(
+                text="Mkt. By: Mondelez India Foods Private Limited",
+                bbox=[100, 700, 300, 20], image_index=0,
+            ),
+            OCRBlock(
+                text="Packaging Material Mfd. By: Huhtamaki India Ltd.",
+                bbox=[100, 740, 300, 20], image_index=0,
+            ),
+        ]
+
+        candidates = extractor.extract_all_candidates(blocks)
+
+        assert len(candidates["manufacturer_packer_importer"]) == 1
+        assert candidates["manufacturer_packer_importer"][0].value == (
+            "Mondelez India Foods Private Limited"
+        )
+
     def test_country_of_origin_made_in(self, extractor):
         blocks = [
             OCRBlock(text="Made in India", bbox=[100, 800, 100, 20], image_index=0)
@@ -82,6 +113,70 @@ class TestCandidateExtractor:
         cand = candidates["country_of_origin"][0]
         assert "India" in cand.value
         assert cand.status == DeclarationStatus.RESOLVED
+        assert cand.raw_text == "Made in India"
+        assert cand.metadata["evidence_type"] == "made_in_statement"
+
+    @pytest.mark.parametrize(
+        ("text", "country", "evidence_type"),
+        [
+            (
+                "Country of Origin: India",
+                "India",
+                "country_of_origin_statement",
+            ),
+            (
+                "Manufactured in India by: Innova Captab Ltd.",
+                "India",
+                "manufactured_in_statement",
+            ),
+        ],
+    )
+    def test_explicit_country_evidence(
+        self, extractor, text, country, evidence_type
+    ):
+        candidates = extractor.extract_all_candidates([
+            OCRBlock(text=text, bbox=[100, 800, 300, 20], image_index=0)
+        ])
+
+        assert len(candidates["country_of_origin"]) == 1
+        candidate = candidates["country_of_origin"][0]
+        assert candidate.value == country
+        assert candidate.raw_text == text
+        assert candidate.metadata["evidence_type"] == evidence_type
+
+    def test_country_of_origin_does_not_infer_from_unrelated_text(self, extractor):
+        candidates = extractor.extract_all_candidates([
+            OCRBlock(
+                text="Manufactured by Innova Captab Ltd.",
+                bbox=[100, 800, 300, 20],
+                image_index=0,
+            )
+        ])
+
+        assert candidates["country_of_origin"] == []
+
+    def test_manufactured_country_evidence_includes_split_manufacturer_text(self, extractor):
+        blocks = [
+            OCRBlock(
+                text="Manufactured in India by:",
+                bbox=[100, 800, 210, 27],
+                image_index=0,
+            ),
+            OCRBlock(
+                text="Innova Captab Ltd.",
+                bbox=[100, 827, 151, 25],
+                image_index=0,
+            ),
+        ]
+
+        candidate = extractor.extract_all_candidates(blocks)["country_of_origin"][0]
+
+        assert candidate.value == "India"
+        assert candidate.raw_text == (
+            "Manufactured in India by: Innova Captab Ltd."
+        )
+        assert len(candidate.source_blocks) == 2
+        assert candidate.metadata["evidence_type"] == "manufactured_in_statement"
 
     def test_date_candidates(self, extractor):
         blocks = [

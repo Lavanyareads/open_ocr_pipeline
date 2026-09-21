@@ -16,6 +16,37 @@ class DeclarationStatus(str, Enum):
     NOT_DETECTED = "not_detected"
 
 
+class PartyRole(str, Enum):
+    """Allowed roles for manufacturer/packer/importer evidence."""
+    MANUFACTURER = "manufacturer"
+    PACKER = "packer"
+    IMPORTER = "importer"
+    MARKETER = "marketer"
+    DISTRIBUTOR = "distributor"
+    UNKNOWN = "unknown"
+
+
+class ProductInformationRole(str, Enum):
+    """Allowed roles for supplemental product evidence."""
+    BATCH_NUMBER = "batch_number"
+    MANUFACTURING_LICENSE = "manufacturing_license"
+    FORMULATION = "formulation"
+    INGREDIENT = "ingredient"
+    WARNING = "warning"
+    INSTRUCTION = "instruction"
+    MARKETING_CLAIM = "marketing_claim"
+    FLAVOUR = "flavour"
+    VARIANT = "variant"
+
+
+class EvidenceEntry(BaseModel):
+    """Role-based evidence entry emitted in structured output."""
+    role: str
+    value: Any
+    raw_text: str
+    source_images: List[int] = Field(default_factory=list)
+
+
 class OCRWord(BaseModel):
     """An individual word detected by OCR."""
     text: str
@@ -54,6 +85,7 @@ class DeclarationValue(BaseModel):
     source_images: List[int] = Field(default_factory=list)
     candidates: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    entries: List[EvidenceEntry] = Field(default_factory=list)
 
 
 class ProductExtraction(BaseModel):
@@ -61,6 +93,9 @@ class ProductExtraction(BaseModel):
     product_id: str
     declarations: Dict[str, DeclarationValue] = Field(default_factory=dict)
     font_measurement: Dict[str, Any] = Field(default_factory=dict)
+    ocr_text: Dict[str, Any] = Field(default_factory=dict)
+    product_classification: Dict[str, Any] = Field(default_factory=dict)
+    additional_product_information: List[EvidenceEntry] = Field(default_factory=list)
 
     def to_structured_json(self) -> Dict[str, Any]:
         """Convert to concise structured JSON for Person 5's Rule Engine.
@@ -76,17 +111,25 @@ class ProductExtraction(BaseModel):
             "product_id": self.product_id,
             "declarations": {},
             "font_measurement": self.font_measurement,
+            "ocr_text": self.ocr_text,
+            "product_classification": self.product_classification,
+            "additional_product_information": [
+                item.model_dump() for item in self.additional_product_information
+            ],
         }
 
         for field_name, decl in self.declarations.items():
             entry: Dict[str, Any] = {"status": decl.status.value}
 
             if decl.status == DeclarationStatus.RESOLVED:
-                entry["value"] = decl.value
-                if decl.raw_text:
-                    entry["raw_text"] = decl.raw_text
-                if decl.source_images:
-                    entry["source_images"] = decl.source_images
+                if decl.entries:
+                    entry["entries"] = [item.model_dump() for item in decl.entries]
+                else:
+                    entry["value"] = decl.value
+                    if decl.raw_text:
+                        entry["raw_text"] = decl.raw_text
+                    if decl.source_images:
+                        entry["source_images"] = decl.source_images
                 # Promote field-specific metadata (e.g. currency, unit)
                 if decl.metadata:
                     for key, val in decl.metadata.items():

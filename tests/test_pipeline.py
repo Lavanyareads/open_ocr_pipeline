@@ -82,19 +82,25 @@ class TestPipelineIntegration:
         assert "error" not in result
         assert result["product_id"] == "test_product_101"
 
-        # Verify raw_ocr.json exists and is populated
-        assert os.path.exists(result["raw_ocr_path"])
-        with open(result["raw_ocr_path"], "r", encoding="utf-8") as f:
-            raw_ocr_data = json.load(f)
-            assert raw_ocr_data["product_id"] == "test_product_101"
-            assert raw_ocr_data["total_blocks"] == 5
-            assert len(raw_ocr_data["normalized_blocks"]) == 5
-
         # Verify structured.json exists and has correct schema
         assert os.path.exists(result["structured_path"])
         with open(result["structured_path"], "r", encoding="utf-8") as f:
             structured_data = json.load(f)
             assert structured_data["product_id"] == "test_product_101"
+            assert "raw_ocr_path" not in result
+            assert len(structured_data["ocr_text"]["images"]) == 1
+            assert len(structured_data["ocr_text"]["images"][0]["text_blocks"]) == 5
+            assert structured_data["ocr_text"]["images"][0]["text_blocks"][0] == {
+                "text": "Brand Name: Royal Delight",
+                "bbox": [50, 50, 40, 20],
+                "confidence": None,
+                "image_index": 0,
+            }
+            assert structured_data["product_classification"] == {
+                "category": "unknown",
+                "confidence": 0.0,
+                "source": "qwen3_vl_semantic_resolver",
+            }
             declarations = structured_data["declarations"]
 
             # Exact declaration field names

@@ -100,7 +100,9 @@ def main():
         print(f"    OCR blocks detected: {product_result.get('ocr_blocks', 'see raw OCR')}")
         print(f"    Declarations resolved: {resolved}")
         print(f"    Declarations unresolved: {unresolved}")
-        print(f"    Raw OCR: {product_result['raw_ocr_path']}")
+        parties = structured.get("manufacturer_packer_importer", {}).get("entries", [])
+        for party in parties:
+            print(f"    {party['role']}={party['value']}")
         print(f"    Structured: {product_result['structured_path']}")
 
 

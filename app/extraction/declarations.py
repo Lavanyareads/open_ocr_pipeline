@@ -12,6 +12,7 @@ from ..models.schemas import (
     DeclarationValue,
     DeclarationStatus,
     ProductExtraction,
+    EvidenceEntry,
 )
 
 
@@ -20,6 +21,7 @@ class DeclarationResolver:
 
     DECLARATION_FIELDS = [
         "brand_name",
+        "product_name",
         "common_name",
         "manufacturer_packer_importer",
         "country_of_origin",
@@ -58,6 +60,10 @@ class DeclarationResolver:
                 field, field_candidates, vlm_field_data
             )
 
+        declarations["manufacturer_packer_importer"] = self._resolve_parties(
+            candidates.get("manufacturer_packer_importer", [])
+        )
+
         return ProductExtraction(
             product_id=product_id,
             declarations=declarations,
@@ -72,7 +78,12 @@ class DeclarationResolver:
         """Resolve a single declaration field."""
         # 1. Check if deterministic extraction already produced a strong resolved candidate
         sorted_candidates = sorted(
-            candidates, key=lambda c: c.confidence_score, reverse=True
+            candidates,
+            key=lambda c: (
+                c.metadata.get("priority", 0),
+                c.confidence_score,
+            ),
+            reverse=True,
         )
 
         source_images = sorted(list(set(
@@ -97,8 +108,27 @@ class DeclarationResolver:
             None
         )
 
+        if field_name in {
+            "mrp",
+            "manufacture_pack_import_date",
+            "best_before_use_by",
+            "country_of_origin",
+        }:
+            resolved_values = {
+                str(c.value)
+                for c in sorted_candidates
+                if c.status == DeclarationStatus.RESOLVED and c.value is not None
+            }
+            if len(resolved_values) > 1:
+                return DeclarationValue(
+                    value=None,
+                    status=DeclarationStatus.UNRESOLVED,
+                    candidates=candidate_dicts,
+                    metadata={"resolution_source": "deterministic_ambiguity"},
+                )
+
         # 2. For semantic fields (brand_name, common_name), prioritize VLM if available
-        is_semantic_field = field_name in ("brand_name", "common_name")
+        is_semantic_field = field_name in ("brand_name", "product_name", "common_name")
 
         if is_semantic_field and vlm_data:
             vlm_status_str = str(vlm_data.get("status", "")).lower()
@@ -125,7 +155,10 @@ class DeclarationResolver:
 
         # 3. If deterministic has a clean resolved candidate, use it
         if best_deterministic:
-            metadata = {k: v for k, v in best_deterministic.metadata.items() if k not in ("type", "matched_text")}
+            metadata = {
+                k: v for k, v in best_deterministic.metadata.items()
+                if k not in ("type", "matched_text", "priority")
+            }
             return DeclarationValue(
                 value=best_deterministic.value,
                 status=DeclarationStatus.RESOLVED,
@@ -175,3 +208,42 @@ class DeclarationResolver:
         return DeclarationValue(
             status=DeclarationStatus.NOT_DETECTED,
         )
+
+    def _resolve_parties(
+        self, candidates: List[DeclarationCandidate]
+    ) -> DeclarationValue:
+        """Project manufacturer roles while preserving every detected party."""
+        role_map = {
+            "manufactured": "manufacturer",
+            "packed": "packer",
+            "imported": "importer",
+            "marketed": "marketer",
+            "mkt. by": "marketer",
+            "distributed": "distributor",
+        }
+        entries = []
+        for candidate in candidates:
+            if candidate.value is None:
+                continue
+            anchor = str(candidate.metadata.get("anchor_type", "")).lower()
+            role = next(
+                (mapped_role for marker, mapped_role in role_map.items() if marker in anchor),
+                "unknown",
+            )
+            entries.append(EvidenceEntry(
+                role=role,
+                value=candidate.value,
+                raw_text=candidate.raw_text,
+                source_images=sorted({
+                    block.image_index for block in candidate.source_blocks
+                }),
+            ))
+
+        if entries:
+            return DeclarationValue(
+                status=DeclarationStatus.RESOLVED,
+                entries=entries,
+            )
+        if candidates:
+            return DeclarationValue(status=DeclarationStatus.UNRESOLVED)
+        return DeclarationValue(status=DeclarationStatus.NOT_DETECTED)
